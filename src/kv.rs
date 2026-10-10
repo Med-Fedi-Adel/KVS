@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
-    io::{BufReader, Write},
+    io::{BufRead, BufReader, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -11,47 +11,29 @@ use crate::{Result, error::KvsError};
 
 /// A key-value store backed by an append-only log.
 ///
-/// When opened, the store replays the log into an in-memory map. Changes made
-/// with [`set`](KvStore::set) and [`remove`](KvStore::remove) are appended to
-/// the log, and [`get`](KvStore::get) reads from the map.
-///
-/// # Example
-///
-/// ```rust
-/// # fn main() -> kvs::Result<()> {
-/// # use kvs::KvStore;
-/// let dir = tempfile::tempdir().expect("create temporary directory");
-/// let mut store = KvStore::open(dir.path())?;
-///
-/// store.set("key".to\_owned(), "value".to\_owned())?;
-/// let value = store.get("key".to\_owned())?;
-/// assert\_eq!(value, Some("value".to\_owned()));
-/// # Ok(())
-/// # }
-/// ```
-#[derive(Default)]
+/// The store keeps an in-memory index from keys to the byte offsets of their
+/// latest `Set` records. Values are read from the log when requested.
 pub struct KvStore {
-    map: HashMap<String, String>,
+    index: HashMap<String, u64>,
     log_path: PathBuf,
 }
 
 impl KvStore {
-    /// Creates an empty in-memory store that appends its log to `kvs.log`
-    /// in the current working directory.
+    /// Creates a store that uses `kvs.log` in the current working directory.
     pub fn new() -> KvStore {
         KvStore {
-            map: HashMap::new(),
+            index: HashMap::new(),
             log_path: PathBuf::from("kvs.log"),
         }
     }
 
-    /// Opens the store in `path`, creating its log file if necessary.
+    /// Opens the store in `path`, creating `kvs.log` if it does not exist.
     ///
-    /// Replays the log into the store's in-memory map.
+    /// Rebuilds the in-memory key-to-offset index by replaying the log.
     pub fn open(path: &Path) -> Result<KvStore> {
         let log_path = path.join("kvs.log");
 
-        // Ensure the log exists, then close this handle before reading it.
+        // Create the log if it doesn't exist.
         drop(
             OpenOptions::new()
                 .create(true)
@@ -60,72 +42,99 @@ impl KvStore {
         );
 
         let file = File::open(&log_path)?;
-        let reader = BufReader::new(file);
-        let records = serde_json::Deserializer::from_reader(reader).into_iter::<LogRecord>();
+        let mut reader = BufReader::new(file);
+        let mut index = HashMap::new();
+        let mut offset = 0_u64;
+        let mut line = Vec::new();
 
-        let mut store = KvStore {
-            map: HashMap::new(),
-            log_path,
-        };
+        loop {
+            line.clear();
+            let bytes_read = reader.read_until(b'\n', &mut line)?;
 
-        // Replay each record into the map, one at a time.
-        for record in records {
-            match record? {
-                LogRecord::Set { key, value } => {
-                    store.map.insert(key, value);
+            if bytes_read == 0 {
+                break;
+            }
+
+            let record: LogRecord = serde_json::from_slice(&line)?;
+
+            match record {
+                LogRecord::Set { key, .. } => {
+                    index.insert(key, offset);
                 }
                 LogRecord::Rm { key } => {
-                    store.map.remove(&key);
+                    index.remove(&key);
                 }
             }
+
+            offset += bytes_read as u64;
         }
 
-        Ok(store)
+        Ok(KvStore { index, log_path })
     }
 
     /// Sets the value for `key`, replacing any existing value.
     ///
-    /// The command is appended to the log before the in-memory map is updated.
+    /// Appends the command to the log and updates the in-memory index.
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
         let record = LogRecord::Set {
             key: key.clone(),
-            value: value.clone(),
+            value,
         };
 
-        self.append_log(&record)?;
-        self.map.insert(key, value);
+        let offset = self.append_log(&record)?;
+        self.index.insert(key, offset);
+
         Ok(())
     }
 
     /// Returns the value for `key`, or `None` if the key is not present.
     pub fn get(&self, key: String) -> Result<Option<String>> {
-        Ok(self.map.get(&key).cloned())
+        let Some(&offset) = self.index.get(&key) else {
+            return Ok(None);
+        };
+
+        let file = File::open(&self.log_path)?;
+        let mut reader = BufReader::new(file);
+        reader.seek(SeekFrom::Start(offset))?;
+
+        let mut line = Vec::new();
+        reader.read_until(b'\n', &mut line)?;
+
+        let record: LogRecord = serde_json::from_slice(&line)?;
+
+        match record {
+            LogRecord::Set { value, .. } => Ok(Some(value)),
+            LogRecord::Rm { .. } => Ok(None),
+        }
     }
 
     /// Removes `key` from the store.
     ///
     /// Returns [`KvsError::KeyNotFound`] if the key does not exist.
     pub fn remove(&mut self, key: String) -> Result<()> {
-        if !self.map.contains_key(&key) {
+        if !self.index.contains_key(&key) {
             return Err(KvsError::KeyNotFound);
         }
 
         self.append_log(&LogRecord::Rm { key: key.clone() })?;
-        self.map.remove(&key);
+        self.index.remove(&key);
+
         Ok(())
     }
 
-    fn append_log(&self, log: &LogRecord) -> Result<()> {
-        let mut line = serde_json::to_string(log)?;
-        line.push('\n');
+    fn append_log(&self, record: &LogRecord) -> Result<u64> {
+        let mut line = serde_json::to_vec(record)?;
+        line.push(b'\n');
 
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.log_path)?;
 
-        file.write_all(line.as_bytes())?;
-        Ok(())
+        let offset = file.metadata()?.len();
+        file.write_all(&line)?;
+
+        Ok(offset)
     }
 }
 
