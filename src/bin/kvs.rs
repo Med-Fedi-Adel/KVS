@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
-use std::process::ExitCode;
+use kvs::{KvStore, Result};
+use serde::Serialize;
+use std::{path::Path, process};
 
 #[derive(Parser)]
 #[command(
@@ -16,8 +18,8 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Subcommand)]
-enum Command {
+#[derive(Subcommand, Serialize)]
+pub enum Command {
     /// Set the value of a string key to a string
     Set {
         /// A string key
@@ -39,9 +41,23 @@ enum Command {
     },
 }
 
-fn main() -> ExitCode {
-    let _cli = Cli::parse();
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let mut store = KvStore::open(Path::new("."))?;
 
-    eprintln!("unimplemented");
-    ExitCode::FAILURE
+    match cli.command {
+        Command::Set { key, value } => store.set(key, value)?,
+
+        Command::Get { key } => match store.get(key)? {
+            Some(value) => println!("{value}"),
+            None => {
+                eprintln!("Key not found");
+                process::exit(1);
+            }
+        },
+
+        Command::Rm { key } => store.remove(key)?,
+    }
+
+    Ok(())
 }

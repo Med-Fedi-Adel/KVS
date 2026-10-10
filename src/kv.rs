@@ -1,6 +1,13 @@
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    fs::OpenOptions,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
-use crate::{Result, result::KvsError};
+use serde::{Deserialize, Serialize};
+
+use crate::Result;
 
 /// The `KvStore` stores string key/value pairs.
 ///
@@ -18,6 +25,7 @@ use crate::{Result, result::KvsError};
 #[derive(Default)]
 pub struct KvStore {
     map: HashMap<String, String>,
+    log_path: PathBuf,
 }
 
 impl KvStore {
@@ -25,18 +33,34 @@ impl KvStore {
     pub fn new() -> KvStore {
         KvStore {
             map: HashMap::new(),
+            log_path: PathBuf::from("kvs.log"),
         }
     }
 
     #[allow(missing_docs)]
     pub fn open(path: &Path) -> Result<KvStore> {
-        Ok(Self::new())
+        let log_path = path.join("kvs.log");
+
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)?;
+        Ok(KvStore {
+            map: HashMap::new(),
+            log_path,
+        })
     }
 
     /// Sets the value of a string key to a string.
     ///
     /// If the key already exists, the previous value will be overwritten.
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
+        let log = LogRecord::Set {
+            key: key.clone(),
+            value: value.clone(),
+        };
+
+        self.append_log(&log)?;
         self.map.insert(key, value);
 
         Ok(())
@@ -55,4 +79,23 @@ impl KvStore {
 
         Ok(())
     }
+
+    fn append_log(&self, log: &LogRecord) -> Result<()> {
+        let mut line = serde_json::to_string(log)?;
+        line.push('\n');
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.log_path)?;
+
+        file.write_all(line.as_bytes())?;
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+enum LogRecord {
+    Set { key: String, value: String },
+    Rm { key: String },
 }
