@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -9,13 +9,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Result, error::KvsError};
 
+const COMPACTION_MIN_LOG_BYTES: u64 = 1024 * 1024;
+
+#[derive(Clone, Copy)]
+struct LogPointer {
+    offset: u64,
+    len: u64,
+}
+
 /// A key-value store backed by an append-only log.
 ///
 /// The store keeps an in-memory index from keys to the byte offsets of their
 /// latest `Set` records. Values are read from the log when requested.
 pub struct KvStore {
-    index: HashMap<String, u64>,
+    index: HashMap<String, LogPointer>,
     log_path: PathBuf,
+    log_size: u64,
+    live_bytes: u64,
 }
 
 impl KvStore {
@@ -24,6 +34,8 @@ impl KvStore {
         KvStore {
             index: HashMap::new(),
             log_path: PathBuf::from("kvs.log"),
+            log_size: 0u64,
+            live_bytes: 0u64,
         }
     }
 
@@ -44,7 +56,8 @@ impl KvStore {
         let file = File::open(&log_path)?;
         let mut reader = BufReader::new(file);
         let mut index = HashMap::new();
-        let mut offset = 0_u64;
+        let mut offset = 0u64;
+        let mut live_bytes = 0u64;
         let mut line = Vec::new();
 
         loop {
@@ -56,20 +69,31 @@ impl KvStore {
             }
 
             let record: LogRecord = serde_json::from_slice(&line)?;
+            let len = bytes_read as u64;
 
             match record {
                 LogRecord::Set { key, .. } => {
-                    index.insert(key, offset);
+                    if let Some(previous) = index.insert(key, LogPointer { offset, len }) {
+                        live_bytes -= previous.len;
+                    }
+                    live_bytes += len;
                 }
                 LogRecord::Rm { key } => {
-                    index.remove(&key);
+                    if let Some(previous) = index.remove(&key) {
+                        live_bytes -= previous.len;
+                    }
                 }
             }
 
-            offset += bytes_read as u64;
+            offset += len;
         }
 
-        Ok(KvStore { index, log_path })
+        Ok(KvStore {
+            index,
+            log_path,
+            log_size: offset,
+            live_bytes,
+        })
     }
 
     /// Sets the value for `key`, replacing any existing value.
@@ -81,23 +105,29 @@ impl KvStore {
             value,
         };
 
-        let offset = self.append_log(&record)?;
-        self.index.insert(key, offset);
+        let pointer = self.append_log(&record)?;
 
-        Ok(())
+        if let Some(previous) = self.index.insert(key, pointer) {
+            self.live_bytes -= previous.len;
+        }
+
+        self.live_bytes += pointer.len;
+        self.log_size = pointer.offset + pointer.len;
+
+        self.maybe_compact()
     }
 
     /// Returns the value for `key`, or `None` if the key is not present.
     pub fn get(&self, key: String) -> Result<Option<String>> {
-        let Some(&offset) = self.index.get(&key) else {
+        let Some(pointer) = self.index.get(&key) else {
             return Ok(None);
         };
 
         let file = File::open(&self.log_path)?;
         let mut reader = BufReader::new(file);
-        reader.seek(SeekFrom::Start(offset))?;
+        reader.seek(SeekFrom::Start(pointer.offset))?;
 
-        let mut line = Vec::new();
+        let mut line = Vec::with_capacity(pointer.len as usize);
         reader.read_until(b'\n', &mut line)?;
 
         let record: LogRecord = serde_json::from_slice(&line)?;
@@ -112,17 +142,19 @@ impl KvStore {
     ///
     /// Returns [`KvsError::KeyNotFound`] if the key does not exist.
     pub fn remove(&mut self, key: String) -> Result<()> {
-        if !self.index.contains_key(&key) {
+        let Some(previous) = self.index.get(&key).copied() else {
             return Err(KvsError::KeyNotFound);
-        }
+        };
 
-        self.append_log(&LogRecord::Rm { key: key.clone() })?;
+        let pointer = self.append_log(&LogRecord::Rm { key: key.clone() })?;
         self.index.remove(&key);
+        self.live_bytes -= previous.len;
+        self.log_size = pointer.offset + pointer.len;
 
-        Ok(())
+        self.maybe_compact()
     }
 
-    fn append_log(&self, record: &LogRecord) -> Result<u64> {
+    fn append_log(&self, record: &LogRecord) -> Result<LogPointer> {
         let mut line = serde_json::to_vec(record)?;
         line.push(b'\n');
 
@@ -134,7 +166,72 @@ impl KvStore {
         let offset = file.metadata()?.len();
         file.write_all(&line)?;
 
-        Ok(offset)
+        Ok(LogPointer {
+            offset,
+            len: line.len() as u64,
+        })
+    }
+
+    fn maybe_compact(&mut self) -> Result<()> {
+        let obsolete_bytes = self.log_size.saturating_sub(self.live_bytes);
+
+        if self.log_size >= COMPACTION_MIN_LOG_BYTES && obsolete_bytes >= self.live_bytes {
+            self.compact()?;
+        }
+
+        Ok(())
+    }
+
+    fn compact(&mut self) -> Result<()> {
+        // Keep the temporary file beside the log so the rename stays on the same filesystem
+        let temp_path = self.log_path.with_extension("compact.tmp");
+
+        let mut old_log = BufReader::new(File::open(&self.log_path)?);
+        let mut new_log = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temp_path)?;
+
+        // Fdiw noticed hashmap is unordered. Sort by offset to read the old offset first
+        let mut entries: Vec<(String, LogPointer)> = self
+            .index
+            .iter()
+            .map(|(key, pointer)| (key.clone(), *pointer))
+            .collect();
+        entries.sort_by_key(|(_, pointer)| pointer.offset);
+
+        let mut new_index = HashMap::with_capacity(entries.len());
+        let mut new_offset = 0u64;
+
+        for (key, pointer) in entries {
+            old_log.seek(SeekFrom::Start(pointer.offset))?;
+
+            let mut record = vec![0; pointer.len as usize];
+            old_log.read_exact(&mut record)?;
+            new_log.write_all(&record)?;
+
+            new_index.insert(
+                key,
+                LogPointer {
+                    offset: new_offset,
+                    len: pointer.len,
+                },
+            );
+            new_offset += pointer.len;
+        }
+
+        new_log.flush()?;
+        new_log.sync_all()?;
+        drop(new_log);
+
+        std::fs::rename(&temp_path, &self.log_path)?;
+
+        self.index = new_index;
+        self.log_size = new_offset;
+        self.live_bytes = new_offset;
+
+        Ok(())
     }
 }
 
