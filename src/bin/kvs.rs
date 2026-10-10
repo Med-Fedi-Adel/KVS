@@ -1,7 +1,10 @@
 use clap::{Parser, Subcommand};
 use kvs::{KvStore, Result};
 use serde::Serialize;
-use std::{path::Path, process};
+use std::{
+    path::Path,
+    process::{self, ExitCode},
+};
 
 #[derive(Parser)]
 #[command(
@@ -41,21 +44,26 @@ pub enum Command {
     },
 }
 
-fn main() -> Result<()> {
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
     let mut store = KvStore::open(Path::new("."))?;
 
     match cli.command {
         Command::Set { key, value } => store.set(key, value)?,
-
         Command::Get { key } => match store.get(key)? {
             Some(value) => println!("{value}"),
-            None => {
-                eprintln!("Key not found");
-                process::exit(1);
-            }
+            None => println!("Key not found"),
         },
-
         Command::Rm { key } => store.remove(key)?,
     }
 
