@@ -44,7 +44,7 @@ pub enum Command {
     },
 }
 
-fn main() -> ExitCode {
+/*fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -54,6 +54,7 @@ fn main() -> ExitCode {
         }
     }
 }
+*/
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
@@ -69,4 +70,102 @@ fn run() -> Result<()> {
     }
 
     Ok(())
+}
+
+use std::{
+    io::{self, BufRead, BufReader, BufWriter, Write},
+    net::{TcpListener, TcpStream},
+};
+
+fn write_pong<W: Write>(w: &mut W) -> io::Result<()> {
+    w.write_all(b"+PONG\r\n")?;
+    w.flush()
+}
+
+fn handle_connection(stream: TcpStream) -> io::Result<()> {
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut writer = BufWriter::new(stream);
+
+    loop {
+        let mut first = String::new();
+        if reader.read_line(&mut first)? == 0 {
+            break;
+        }
+
+        if !first.starts_with('*') {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "expected array"));
+        }
+
+        let mut bulk = String::new();
+        reader.read_line(&mut bulk)?;
+
+        let mut cmd = String::new();
+        reader.read_line(&mut cmd);
+
+        let cmd = cmd.trim_end_matches("\r\n");
+        if cmd.eq_ignore_ascii_case("PING") {
+            println!("PING Received");
+            write_pong(&mut writer)?;
+        } else {
+            writer.write_all(b"-ERR only PING supported\r\n")?;
+            writer.flush()?;
+        }
+    }
+
+    Ok(())
+}
+
+fn run_server(addr: &str) -> io::Result<()> {
+    let listener = TcpListener::bind(addr)?;
+    println!("listenning on {addr}");
+
+    for conn in listener.incoming() {
+        let stream = conn?;
+        std::thread::spawn(move || {
+            let _ = handle_connection(stream);
+        });
+    }
+
+    Ok(())
+}
+
+fn write_ping<W: Write>(w: &mut W) -> io::Result<()> {
+    w.write_all(b"*1\r\n$4\r\nPING\r\n")?;
+    w.flush()
+}
+
+fn read_simple_string<R: BufRead>(r: &mut R) -> io::Result<String> {
+    let mut line = String::new();
+    r.read_line(&mut line)?;
+    if !line.starts_with('+') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "expected simple string",
+        ));
+    }
+
+    Ok(line.trim_end_matches("\r\n")[1..].to_string())
+}
+
+fn run_client(addr: &str) -> io::Result<()> {
+    let stream = TcpStream::connect(addr)?;
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut writer = BufWriter::new(stream);
+
+    write_ping(&mut writer)?;
+
+    let reply = read_simple_string(&mut reader)?;
+    println!("reply: {reply}");
+    Ok(())
+}
+
+fn main() -> io::Result<()> {
+    match std::env::args().nth(1).as_deref() {
+        Some("server") => run_server("127.0.0.1:6379"),
+        Some("client") => run_client("127.0.0.1:6379"),
+        _ => {
+            eprintln!("usage: main [server|client]");
+            Ok(())
+        }
+    }
 }
