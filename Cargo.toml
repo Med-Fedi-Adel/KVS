@@ -7,9 +7,11 @@ edition = "2024"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
+criterion = "0.8.2"
 predicates = "3.1.4"
 tempfile = "3.27.0"
 walkdir= "2.5.0"
+rand = "0.10.3"
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive"] }

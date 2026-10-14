@@ -1,10 +1,12 @@
 use std::{error::Error, fmt, io};
 
 #[derive(Debug)]
+#[allow(missing_docs)]
 pub enum KvsError {
     Io(io::Error),
     Serde(serde_json::Error),
     KeyNotFound,
+    Server(String),
 }
 
 impl fmt::Display for KvsError {
@@ -13,6 +15,7 @@ impl fmt::Display for KvsError {
             KvsError::Io(err) => write!(f, "{err}"),
             KvsError::Serde(err) => write!(f, "{err}"),
             KvsError::KeyNotFound => write!(f, "Key not found"),
+            KvsError::Server(message) => write!(f, "{message}"),
         }
     }
 }
