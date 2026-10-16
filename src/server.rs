@@ -1,34 +1,30 @@
 use std::{
-    fs,
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpListener, TcpStream},
-    path::Path,
 };
 
 use crate::{
-    KvStore, Result,
+    Result,
+    engines::KvsEngine,
     protocol::{Request, Response},
 };
 
-pub fn run(addr: SocketAddr, path: &Path) -> Result<()> {
-    fs::create_dir_all(path)?;
-
+pub fn run(addr: SocketAddr, mut engine: Box<dyn KvsEngine>) -> Result<()> {
     let listener = TcpListener::bind(addr)?;
-    let mut store = KvStore::open(path)?;
 
     for stream in listener.incoming() {
-        handle_connection(stream?, &mut store)?;
+        handle_connection(stream?, engine.as_mut())?;
     }
 
     Ok(())
 }
 
-pub fn handle_connection(mut stream: TcpStream, store: &mut KvStore) -> Result<()> {
+pub fn handle_connection(mut stream: TcpStream, engine: &mut dyn KvsEngine) -> Result<()> {
     let mut line = Vec::new();
     BufReader::new(&mut stream).read_until(b'\n', &mut line)?;
 
     let response = match serde_json::from_slice::<Request>(&line) {
-        Ok(request) => match execute_request(request, store) {
+        Ok(request) => match execute_request(request, engine) {
             Ok(response) => response,
             Err(error) => Response::Error(error.to_string()),
         },
@@ -41,15 +37,15 @@ pub fn handle_connection(mut stream: TcpStream, store: &mut KvStore) -> Result<(
     Ok(())
 }
 
-fn execute_request(request: Request, store: &mut KvStore) -> Result<Response> {
+fn execute_request(request: Request, engine: &mut dyn KvsEngine) -> Result<Response> {
     match request {
         Request::Set { key, value } => {
-            store.set(key, value)?;
+            engine.set(key, value)?;
             Ok(Response::Ok)
         }
-        Request::Get { key } => Ok(Response::Value(store.get(key)?)),
+        Request::Get { key } => Ok(Response::Value(engine.get(key)?)),
         Request::Rm { key } => {
-            store.remove(key)?;
+            engine.remove(key)?;
             Ok(Response::Ok)
         }
     }

@@ -1,12 +1,7 @@
 use clap::{Parser, Subcommand};
-use kvs::{KvStore, KvsError, Result, client};
-use serde::{Deserialize, Serialize};
-use std::{
-    io::{BufRead, BufReader, Write},
-    net::{SocketAddr, TcpStream},
-    path::Path,
-    process::ExitCode,
-};
+use kvs::{Result, client};
+use serde::Serialize;
+use std::{net::SocketAddr, process::ExitCode};
 
 #[derive(Parser)]
 #[command(
