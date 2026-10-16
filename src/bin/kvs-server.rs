@@ -31,6 +31,15 @@ enum EngineName {
     Sled,
 }
 
+impl EngineName {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Kvs => "kvs",
+            Self::Sled => "sled",
+        }
+    }
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -42,16 +51,27 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
-    let cli = Cli::parse();
-    let data_dir = Path::new(".");
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .target(env_logger::Target::Stderr)
+        .init();
 
-    let engine: Box<dyn KvsEngine> = match cli.engine {
-        Some(EngineName::Sled) => {
+    let cli = Cli::parse();
+    let engine_name = cli.engine.unwrap_or(EngineName::Kvs);
+
+    log::info!("kvs-server version {}", env!("CARGO_PKG_VERSION"));
+    log::info!(
+        "configuration: addr={}, engine={}",
+        cli.addr,
+        engine_name.as_str()
+    );
+
+    let engine: Box<dyn KvsEngine> = match engine_name {
+        EngineName::Kvs => Box::new(engines::KvStore::open(Path::new("."))?),
+        EngineName::Sled => {
             return Err(KvsError::Server(
                 "the sled engine is not implemented yet".to_owned(),
             ));
         }
-        Some(EngineName::Kvs) | None => Box::new(engines::KvStore::open(data_dir)?),
     };
 
     server::run(cli.addr, engine)
