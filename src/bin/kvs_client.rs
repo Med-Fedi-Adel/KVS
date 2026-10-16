@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use kvs::{KvStore, KvsError, Result};
+use kvs::{KvStore, KvsError, Result, client};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -49,13 +49,6 @@ pub enum Command {
     },
 }
 
-#[derive(Deserialize)]
-enum ServerResponse {
-    Ok,
-    Value(Option<String>),
-    Error(String),
-}
-
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -69,31 +62,11 @@ fn main() -> ExitCode {
 fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    let mut stream = TcpStream::connect(cli.addr)?;
-    serde_json::to_writer(&mut stream, &cli.command)?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
+    let command = match cli.command {
+        Command::Set { key, value } => client::Command::Set { key, value },
+        Command::Get { key } => client::Command::Get { key },
+        Command::Rm { key } => client::Command::Rm { key },
+    };
 
-    let mut response_line = String::new();
-    BufReader::new(stream).read_line(&mut response_line)?;
-
-    if response_line.is_empty() {
-        return Err(KvsError::Io(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "server closed the connection without responding",
-        )));
-    }
-
-    match serde_json::from_str::<ServerResponse>(&response_line)? {
-        ServerResponse::Ok => Ok(()),
-        ServerResponse::Value(Some(value)) => {
-            println!("{value}");
-            Ok(())
-        }
-        ServerResponse::Value(None) => {
-            println!("Key not found");
-            Ok(())
-        }
-        ServerResponse::Error(message) => Err(KvsError::Server(message)),
-    }
+    client::execute(cli.addr, command)
 }
