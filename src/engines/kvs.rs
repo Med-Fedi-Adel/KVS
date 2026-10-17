@@ -249,6 +249,12 @@ impl KvStore {
     }
 }
 
+impl Default for KvStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 enum LogRecord {
     Set { key: String, value: String },
