@@ -6,7 +6,7 @@ use std::{
 use crate::{
     Result,
     engines::KvsEngine,
-    protocol::{Request, Response},
+    protocol::{Request, Response, read_message, write_message},
 };
 
 pub fn run(addr: SocketAddr, mut engine: Box<dyn KvsEngine>) -> Result<()> {
@@ -34,10 +34,13 @@ pub fn run(addr: SocketAddr, mut engine: Box<dyn KvsEngine>) -> Result<()> {
 }
 
 pub fn handle_connection(mut stream: TcpStream, engine: &mut dyn KvsEngine) -> Result<()> {
-    let mut line = Vec::new();
-    BufReader::new(&mut stream).read_until(b'\n', &mut line)?;
+    let request_result = {
+        let read_stream = stream.try_clone()?;
+        let mut reader = BufReader::new(read_stream);
+        read_message::<_, Request>(&mut reader)
+    };
 
-    let response = match serde_json::from_slice::<Request>(&line) {
+    let response = match request_result {
         Ok(request) => match execute_request(request, engine) {
             Ok(response) => response,
             Err(error) => Response::Error(error.to_string()),
@@ -45,9 +48,7 @@ pub fn handle_connection(mut stream: TcpStream, engine: &mut dyn KvsEngine) -> R
         Err(error) => Response::Error(error.to_string()),
     };
 
-    serde_json::to_writer(&mut stream, &response)?;
-    stream.write_all(b"\n")?;
-
+    write_message(&mut stream, &response)?;
     Ok(())
 }
 

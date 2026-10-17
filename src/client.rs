@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     KvsError, Result,
-    protocol::{Request, Response},
+    protocol::{Request, Response, read_message, write_message},
 };
 
 pub enum Command {
@@ -22,21 +22,12 @@ pub fn execute(addr: SocketAddr, command: Command) -> Result<()> {
     };
 
     let mut stream = TcpStream::connect(addr)?;
-    serde_json::to_writer(&mut stream, &request)?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
+    write_message(&mut stream, &request)?;
 
-    let mut response_line = String::new();
-    BufReader::new(stream).read_line(&mut response_line)?;
+    let mut reader = BufReader::new(stream);
+    let response: Response = read_message(&mut reader)?;
 
-    if response_line.is_empty() {
-        return Err(KvsError::Io(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "server closed the connection without responding",
-        )));
-    }
-
-    match serde_json::from_str::<Response>(&response_line)? {
+    match response {
         Response::Ok => Ok(()),
         Response::Value(Some(value)) => {
             println!("{value}");
