@@ -140,6 +140,8 @@ impl KvStore {
         // this is also why the benchmarking is total shit for kvs repeated open and metadata calls
         // create this overhead on the read benchmarks as well
         // we need an in memory index probably for values
+        // we can keep sync and optimize around it , batching or group commit can reduce syncs +
+        // buffred-throughput benchmarks
         let file = File::open(&self.log_path)?;
         let mut reader = BufReader::new(file);
         reader.seek(SeekFrom::Start(pointer.offset))?;
