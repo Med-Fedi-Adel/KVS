@@ -1,3 +1,4 @@
+pub use engines::KvStore;
 pub use engines::KvsEngine;
 pub use error::KvsError;
 pub use error::Result;

@@ -75,11 +75,10 @@ fn run() -> Result<()> {
     check_engine(data_dir, engine_name.as_str())?;
 
     let engine: Box<dyn KvsEngine> = match engine_name {
-        EngineName::Kvs => Box::new(engines::KvStore::open(Path::new("."))?),
+        EngineName::Kvs => Box::new(engines::KvStore::open(data_dir)?),
         EngineName::Sled => {
-            return Err(KvsError::Server(
-                "the sled engine is not implemented yet".to_owned(),
-            ));
+            let sled_path = data_dir.join("sled_db");
+            Box::new(engines::SledKvsEngine::open(&sled_path)?)
         }
     };
 
