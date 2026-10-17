@@ -137,6 +137,9 @@ impl KvStore {
             return Ok(None);
         };
 
+        // this is also why the benchmarking is total shit for kvs repeated open and metadata calls
+        // create this overhead on the read benchmarks as well
+        // we need an in memory index probably for values
         let file = File::open(&self.log_path)?;
         let mut reader = BufReader::new(file);
         reader.seek(SeekFrom::Start(pointer.offset))?;
@@ -179,6 +182,8 @@ impl KvStore {
 
         let offset = file.metadata()?.len();
         file.write_all(&line)?;
+        // this why it's benchmarking slower than sled
+        file.sync_data()?;
 
         Ok(LogPointer {
             offset,
