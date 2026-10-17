@@ -23,5 +23,7 @@ pub trait KvsEngine {
 pub mod kvs;
 pub use kvs::KvStore;
 
+pub mod sled;
+pub use sled::SledKvsEngine;
 // Add this after src/engines/sled.rs exists:
 // pub mod sled;

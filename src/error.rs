@@ -7,6 +7,8 @@ pub enum KvsError {
     Serde(serde_json::Error),
     KeyNotFound,
     Server(String),
+    Sled(sled::Error),
+    Utf8(std::string::FromUtf8Error),
 }
 
 impl fmt::Display for KvsError {
@@ -16,6 +18,8 @@ impl fmt::Display for KvsError {
             KvsError::Serde(err) => write!(f, "{err}"),
             KvsError::KeyNotFound => write!(f, "Key not found"),
             KvsError::Server(message) => write!(f, "{message}"),
+            KvsError::Sled(err) => write!(f, "{err}"),
+            KvsError::Utf8(err) => write!(f, "{err}"),
         }
     }
 }
@@ -31,6 +35,18 @@ impl From<io::Error> for KvsError {
 impl From<serde_json::Error> for KvsError {
     fn from(error: serde_json::Error) -> Self {
         KvsError::Serde(error)
+    }
+}
+
+impl From<sled::Error> for KvsError {
+    fn from(error: sled::Error) -> Self {
+        KvsError::Sled(error)
+    }
+}
+
+impl From<std::string::FromUtf8Error> for KvsError {
+    fn from(error: std::string::FromUtf8Error) -> Self {
+        KvsError::Utf8(error)
     }
 }
 
