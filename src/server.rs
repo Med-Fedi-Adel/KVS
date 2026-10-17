@@ -11,9 +11,23 @@ use crate::{
 
 pub fn run(addr: SocketAddr, mut engine: Box<dyn KvsEngine>) -> Result<()> {
     let listener = TcpListener::bind(addr)?;
+    log::info!("listening on {addr}");
 
-    for stream in listener.incoming() {
-        handle_connection(stream?, engine.as_mut())?;
+    for incoming in listener.incoming() {
+        let stream = match incoming {
+            Ok(stream) => stream,
+            Err(error) => {
+                log::error!("failed to accept connection: {error}");
+                continue;
+            }
+        };
+
+        match stream.peer_addr() {
+            Ok(peer) => log::info!("accepted connection from {peer}"),
+            Err(error) => log::warn!("accepted connection, but couldn't get peer address: {error}"),
+        }
+
+        handle_connection(stream, engine.as_mut())?;
     }
 
     Ok(())
